@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var retryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Settings.shared.migrateIfNeeded()
         menuBar = MenuBarController(tap: tap, onToggleEnabled: { [weak self] enabled in
             self?.applyEnabledState(enabled)
         })

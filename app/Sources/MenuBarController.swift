@@ -69,6 +69,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(mi)
         }
 
+        menu.addItem(buildAppRulesItem())
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Alt-Drag", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -101,6 +103,79 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             alert.informativeText = "Paste this into Terminal and run it:\n\n\(cmd)\n\n"
                 + "(This app doesn't change system settings on its own.)"
             alert.runModal()
+        }
+    }
+
+    // --- App Rules -----------------------------------------------------------
+    private func buildAppRulesItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "App Rules", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let overrides = Settings.shared.overrides
+
+        if overrides.isEmpty {
+            let none = NSMenuItem(title: "No rules", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            submenu.addItem(none)
+        } else {
+            for bid in overrides.keys.sorted(by: { displayName($0) < displayName($1) }) {
+                submenu.addItem(ruleItem(bundleId: bid, override: overrides[bid]!))
+            }
+        }
+
+        // Add a rule for the frontmost app (the one you were just using).
+        if let front = NSWorkspace.shared.frontmostApplication,
+           let bid = front.bundleIdentifier, bid != Bundle.main.bundleIdentifier,
+           overrides[bid] == nil {
+            submenu.addItem(.separator())
+            let add = NSMenuItem(title: "Add rule for \(front.localizedName ?? bid)…",
+                                 action: nil, keyEquivalent: "")
+            let addSub = NSMenu()
+            let fb = NSMenuItem(title: "Fallback (AX move)", action: #selector(addFrontFallback), keyEquivalent: "")
+            fb.target = self
+            let dis = NSMenuItem(title: "Disabled (ignore app)", action: #selector(addFrontDisabled), keyEquivalent: "")
+            dis.target = self
+            addSub.addItem(fb); addSub.addItem(dis)
+            add.submenu = addSub
+            submenu.addItem(add)
+        }
+
+        item.submenu = submenu
+        return item
+    }
+
+    private func ruleItem(bundleId bid: String, override o: AppOverride) -> NSMenuItem {
+        let title = displayName(bid) + (o.auto ? " (auto)" : "")
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let fb = NSMenuItem(title: "Fallback (AX move)", action: #selector(setRuleFallback(_:)), keyEquivalent: "")
+        fb.target = self; fb.representedObject = bid; fb.state = o.state == .fallback ? .on : .off
+        let dis = NSMenuItem(title: "Disabled (ignore app)", action: #selector(setRuleDisabled(_:)), keyEquivalent: "")
+        dis.target = self; dis.representedObject = bid; dis.state = o.state == .disabled ? .on : .off
+        let del = NSMenuItem(title: "Remove rule", action: #selector(removeRule(_:)), keyEquivalent: "")
+        del.target = self; del.representedObject = bid
+        sub.addItem(fb); sub.addItem(dis); sub.addItem(.separator()); sub.addItem(del)
+        item.submenu = sub
+        return item
+    }
+
+    private func displayName(_ bid: String) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bid).first?.localizedName ?? bid
+    }
+
+    @objc private func setRuleFallback(_ s: NSMenuItem) {
+        if let bid = s.representedObject as? String { Settings.shared.setOverride(bid, .fallback) }
+    }
+    @objc private func setRuleDisabled(_ s: NSMenuItem) {
+        if let bid = s.representedObject as? String { Settings.shared.setOverride(bid, .disabled) }
+    }
+    @objc private func removeRule(_ s: NSMenuItem) {
+        if let bid = s.representedObject as? String { Settings.shared.removeOverride(bid) }
+    }
+    @objc private func addFrontFallback() { addFrontmost(.fallback) }
+    @objc private func addFrontDisabled() { addFrontmost(.disabled) }
+    private func addFrontmost(_ state: AppOverride.State) {
+        if let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier {
+            Settings.shared.setOverride(bid, state)
         }
     }
 

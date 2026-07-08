@@ -78,11 +78,37 @@ self-signed identity (`AltDrag Local Signing`) in a dedicated keychain, and
 `build.sh` signs with it. The designated requirement is certificate-based, so
 the grant survives rebuilds. Override with `ALTDRAG_SIGN_IDENTITY`.
 
+## Move fallback & per-app rules
+
+Some apps ignore the native drag gesture (e.g. System Settings, Chrome's
+vertical tab bar). Because the move remap injects Ctrl+Cmd, an app that doesn't
+consume the gesture receives a **Ctrl+click** — which macOS treats as a
+secondary click, popping a context menu instead of dragging.
+
+For those, Alt-Drag falls back to an **AX-based move** (same technique as
+resize; no snapping). Routing is decided per app:
+
+- A small seeded list of known offenders (System Settings) uses the fallback
+  from the start.
+- Otherwise Alt-Drag tries the native gesture and **probes** whether the window
+  actually moved. An app that *never* moves (failures with zero successes) is
+  auto-learned into a fallback rule. Apps that work even sometimes (Chrome from
+  its title bar) stay native.
+
+Rules are managed under **App Rules** in the menu. Each app can be:
+
+- *unset* — default (native, with auto-learn probing),
+- **Fallback** — force the AX move, or
+- **Disabled** — Alt-Drag ignores the app entirely (its own Option-drag returns).
+
+Auto-learned rules are tagged `(auto)` and can be individually edited or removed.
+
 ## Menu-bar options
 
 - **Enabled** — pause/resume the gestures without quitting.
 - **Trigger** — choose the modifier (Option, Command, Control, Option+Shift).
 - **Launch at Login** — register via `SMAppService`.
+- **App Rules** — per-app move fallback / disable overrides (see above).
 - **Setup** — live status + fixes for the three prerequisites above.
 
 ## Layout
@@ -98,8 +124,9 @@ spike/          throwaway validation spikes for move and resize (reference)
 
 ## Known limitations
 
-- Some apps ignore the native drag gesture (e.g. System Settings, Chrome's
-  vertical tab bar) and receive the injected Ctrl-click as a context-menu
-  request. A fallback move path for these is planned.
+- Routing is per-app, so an app that honors the gesture on most surfaces but not
+  one (Chrome's vertical tab bar) keeps native everywhere and that one surface
+  still leaks a context menu. Per-surface fallback isn't implemented.
 - Resize on very heavy apps (e.g. Slack) lags — this mirrors the native resize,
   which is also slow there.
+- The AX move fallback has no window/edge snapping (the native path does).

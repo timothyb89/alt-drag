@@ -9,6 +9,40 @@ final class Settings {
     private enum Key {
         static let enabled = "enabled"
         static let modifier = "modifierFlags"
+        static let overrides = "appOverrides"
+        static let legacyLearned = "learnedOffenders"
+    }
+
+    /// Per-app override rules, keyed by bundle identifier.
+    var overrides: [String: AppOverride] {
+        get {
+            guard let data = d.data(forKey: Key.overrides),
+                  let dict = try? JSONDecoder().decode([String: AppOverride].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set { d.set(try? JSONEncoder().encode(newValue), forKey: Key.overrides) }
+    }
+
+    func setOverride(_ bundleId: String, _ state: AppOverride.State, auto: Bool = false) {
+        var o = overrides
+        o[bundleId] = AppOverride(state: state, auto: auto)
+        overrides = o
+    }
+
+    func removeOverride(_ bundleId: String) {
+        var o = overrides
+        o[bundleId] = nil
+        overrides = o
+    }
+
+    /// One-time migration of the old learned-offenders set into override rules.
+    func migrateIfNeeded() {
+        guard let legacy = d.stringArray(forKey: Key.legacyLearned), !legacy.isEmpty else { return }
+        var o = overrides
+        for bid in legacy where o[bid] == nil { o[bid] = AppOverride(state: .fallback, auto: true) }
+        overrides = o
+        d.removeObject(forKey: Key.legacyLearned)
     }
 
     var enabled: Bool {
@@ -26,6 +60,15 @@ final class Settings {
         }
         set { d.set(NSNumber(value: newValue.rawValue), forKey: Key.modifier) }
     }
+}
+
+/// A per-app rule: either ignore the app entirely, or force the AX move
+/// fallback. `auto` marks rules created by gesture-support learning (vs by the
+/// user), for display only.
+struct AppOverride: Codable, Equatable {
+    enum State: String, Codable { case disabled, fallback }
+    var state: State
+    var auto: Bool
 }
 
 /// Selectable trigger modifiers surfaced in the menu.

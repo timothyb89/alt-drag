@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+app/build/
+spike/alt-drag-spike
+spike/alt-resize-spike
+*.o
+*.dSYM

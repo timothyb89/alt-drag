@@ -13,6 +13,10 @@ gets janky across monitors. Alt-Drag avoids that by **remapping input onto the
 window management macOS already ships**, falling back to the Accessibility API
 only where it must (resize, which has no native gesture).
 
+> [!WARNING]
+> This project was entirely implemented by Claude Opus 4.8. It was tested
+> manually, but use at your own risk.
+
 ## How it works
 
 ### Move (left drag) — native gesture remap

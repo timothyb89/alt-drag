@@ -11,6 +11,9 @@ final class Settings {
         static let modifier = "modifierFlags"
         static let overrides = "appOverrides"
         static let legacyLearned = "learnedOffenders"
+        static let workspaceEnabled = "workspaceEnabled"
+        static let workspaceHaptics = "workspaceHaptics"
+        static let workspaceSensitivity = "workspaceSensitivity"
     }
 
     /// Per-app override rules, keyed by bundle identifier.
@@ -50,6 +53,31 @@ final class Settings {
         set { d.set(newValue, forKey: Key.enabled) }
     }
 
+    // --- Workspace switcher --------------------------------------------------
+
+    /// Whether the instant workspace-switch gesture (3-finger swipe / modifier+
+    /// Tab, gated behind the trigger modifier) is active.
+    var workspaceEnabled: Bool {
+        get { d.object(forKey: Key.workspaceEnabled) as? Bool ?? true }
+        set { d.set(newValue, forKey: Key.workspaceEnabled) }
+    }
+
+    /// Haptic detent per space crossed.
+    var workspaceHaptics: Bool {
+        get { d.object(forKey: Key.workspaceHaptics) as? Bool ?? true }
+        set { d.set(newValue, forKey: Key.workspaceHaptics) }
+    }
+
+    /// Swipe sensitivity: the `progress` value that maps to the full desktop
+    /// range. Smaller = less travel to cross all desktops.
+    var workspaceSensitivity: Double {
+        get {
+            let v = d.object(forKey: Key.workspaceSensitivity) as? Double
+            return (v ?? 0.75) > 0 ? (v ?? 0.75) : 0.75
+        }
+        set { d.set(newValue, forKey: Key.workspaceSensitivity) }
+    }
+
     /// The trigger modifier, stored as a device-independent CGEventFlags raw value.
     var modifier: CGEventFlags {
         get {
@@ -82,4 +110,16 @@ let modifierPresets: [ModifierPreset] = [
     ModifierPreset(name: "Command (⌘)",       flags: .maskCommand),
     ModifierPreset(name: "Control (⌃)",       flags: .maskControl),
     ModifierPreset(name: "Option + Shift (⌥⇧)", flags: [.maskAlternate, .maskShift]),
+]
+
+/// Swipe-sensitivity presets surfaced in the menu (full-range `progress`).
+struct SensitivityPreset {
+    let name: String
+    let full: Double
+}
+
+let sensitivityPresets: [SensitivityPreset] = [
+    SensitivityPreset(name: "High",   full: 0.5),
+    SensitivityPreset(name: "Medium", full: 0.75),
+    SensitivityPreset(name: "Low",    full: 1.0),
 ]

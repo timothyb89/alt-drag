@@ -5,11 +5,11 @@ import Cocoa
 final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let tap: EventTapController
-    private let onToggleEnabled: (Bool) -> Void
+    private let onChanged: () -> Void
 
-    init(tap: EventTapController, onToggleEnabled: @escaping (Bool) -> Void) {
+    init(tap: EventTapController, onChanged: @escaping () -> Void) {
         self.tap = tap
-        self.onToggleEnabled = onToggleEnabled
+        self.onChanged = onChanged
         super.init()
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "macwindow.on.rectangle",
@@ -53,6 +53,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+        buildWorkspaceSection(into: menu)
+
+        menu.addItem(.separator())
         let setupHeader = NSMenuItem(title: "Setup", action: nil, keyEquivalent: "")
         setupHeader.isEnabled = false
         menu.addItem(setupHeader)
@@ -78,13 +81,58 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleEnabled() {
-        let newValue = !Settings.shared.enabled
-        Settings.shared.enabled = newValue
-        onToggleEnabled(newValue)
+        Settings.shared.enabled.toggle()
+        onChanged()
     }
 
     @objc private func selectModifier(_ sender: NSMenuItem) {
         Settings.shared.modifier = modifierPresets[sender.tag].flags
+    }
+
+    // --- Workspace switcher --------------------------------------------------
+    private func buildWorkspaceSection(into menu: NSMenu) {
+        let header = NSMenuItem(title: "Workspace Switch", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+
+        let toggle = NSMenuItem(title: "Instant Switch Gesture",
+                                action: #selector(toggleWorkspace), keyEquivalent: "")
+        toggle.target = self
+        toggle.state = Settings.shared.workspaceEnabled ? .on : .off
+        menu.addItem(toggle)
+
+        // Sensitivity (radio).
+        let sensItem = NSMenuItem(title: "Swipe Sensitivity", action: nil, keyEquivalent: "")
+        let sensMenu = NSMenu()
+        let currentFull = Settings.shared.workspaceSensitivity
+        for (i, preset) in sensitivityPresets.enumerated() {
+            let mi = NSMenuItem(title: preset.name, action: #selector(selectSensitivity(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.tag = i
+            mi.state = (preset.full == currentFull) ? .on : .off
+            sensMenu.addItem(mi)
+        }
+        sensItem.submenu = sensMenu
+        sensItem.isEnabled = Settings.shared.workspaceEnabled
+        menu.addItem(sensItem)
+
+        let haptics = NSMenuItem(title: "Haptic Feedback",
+                                 action: #selector(toggleHaptics), keyEquivalent: "")
+        haptics.target = self
+        haptics.state = Settings.shared.workspaceHaptics ? .on : .off
+        haptics.isEnabled = Settings.shared.workspaceEnabled
+        menu.addItem(haptics)
+    }
+
+    @objc private func toggleWorkspace() {
+        Settings.shared.workspaceEnabled.toggle()
+        onChanged()
+    }
+    @objc private func selectSensitivity(_ sender: NSMenuItem) {
+        Settings.shared.workspaceSensitivity = sensitivityPresets[sender.tag].full
+    }
+    @objc private func toggleHaptics() {
+        Settings.shared.workspaceHaptics.toggle()
     }
 
     @objc private func toggleLaunchAtLogin() {

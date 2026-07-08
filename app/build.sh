@@ -14,9 +14,16 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/Info.plist"
 
-xcrun swiftc -O Sources/*.swift \
+# Compile the C core (CGS space switching, Dock-swipe classification, MTActuator
+# haptics) and link it into the Swift build via the bridging header.
+xcrun clang -O2 -c Sources/spacecore.c -o build/spacecore.o
+
+xcrun swiftc -O Sources/*.swift build/spacecore.o \
+    -import-objc-header Sources/AltDrag-Bridging.h \
     -o "$MACOS/AltDrag" \
-    -framework Cocoa -framework ApplicationServices -framework ServiceManagement
+    -framework Cocoa -framework ApplicationServices -framework ServiceManagement \
+    -framework CoreGraphics
+rm -f build/spacecore.o
 
 # Prefer a stable self-signed identity so the Accessibility (TCC) grant sticks
 # across rebuilds; ad-hoc signatures change every build and drop the grant.

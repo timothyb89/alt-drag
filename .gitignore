@@ -5,5 +5,8 @@
 app/build/
 spike/alt-drag-spike
 spike/alt-resize-spike
+spike/spaces
+spike/overlay
+spike/haptictest
 *.o
 *.dSYM

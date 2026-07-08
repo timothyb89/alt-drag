@@ -2,38 +2,43 @@ import Cocoa
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let tap = EventTapController()
+    private let switcher = WorkspaceSwitcher()
     private var menuBar: MenuBarController!
     private var retryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Settings.shared.migrateIfNeeded()
-        menuBar = MenuBarController(tap: tap, onToggleEnabled: { [weak self] enabled in
-            self?.applyEnabledState(enabled)
+        menuBar = MenuBarController(tap: tap, onChanged: { [weak self] in
+            self?.sync()
         })
 
         if !Prerequisites.accessibilityTrusted {
             Prerequisites.promptForAccessibility()
         }
-        applyEnabledState(Settings.shared.enabled)
+        sync()
     }
 
-    /// Start or stop the tap to match the enabled setting. Starting can fail if
-    /// Accessibility isn't granted yet, so we poll until it succeeds.
-    private func applyEnabledState(_ enabled: Bool) {
-        if enabled {
-            if !tap.start() { startRetryLoop() }
-        } else {
-            tap.stop()
-            stopRetryLoop()
-        }
+    /// Start/stop each tap to match its enabled setting. Starting can fail until
+    /// Accessibility is granted, so we poll until every enabled tap is running.
+    private func sync() {
+        if allEnabledRunning() { stopRetryLoop() } else { startRetryLoop() }
+    }
+
+    /// Attempts to bring both taps in line with settings; returns whether every
+    /// enabled tap is now running.
+    @discardableResult
+    private func allEnabledRunning() -> Bool {
+        var ok = true
+        if Settings.shared.enabled { ok = tap.start() && ok } else { tap.stop() }
+        if Settings.shared.workspaceEnabled { ok = switcher.start() && ok } else { switcher.stop() }
+        return ok
     }
 
     private func startRetryLoop() {
         guard retryTimer == nil else { return }
         retryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if !Settings.shared.enabled { self.stopRetryLoop(); return }
-            if self.tap.start() { self.stopRetryLoop() }
+            if self.allEnabledRunning() { self.stopRetryLoop() }
         }
     }
 
@@ -44,5 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         tap.stop()
+        switcher.stop()
     }
 }

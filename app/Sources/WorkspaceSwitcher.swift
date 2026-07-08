@@ -225,7 +225,11 @@ final class WorkspaceSwitcher {
     private let controller: SpaceOverlayController
 
     private var triggerDown = false
-    private var gestureActive = false
+    // We keep swallowing swipe events for a short window after the modifier is
+    // released to absorb the gesture's momentum tail — otherwise those trailing
+    // events reach the OS and trigger the native edge overscroll (black bounce)
+    // at the first/last space. Refreshed while events keep flowing.
+    private var graceUntil = DispatchTime.now()
 
     var isRunning: Bool { tap != nil }
 
@@ -260,7 +264,7 @@ final class WorkspaceSwitcher {
         if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes) }
         controller.close()
         triggerDown = false
-        gestureActive = false
+        graceUntil = .now()
         tap = nil
         runLoopSource = nil
     }
@@ -280,7 +284,10 @@ final class WorkspaceSwitcher {
         switch type {
         case .flagsChanged:
             let nowDown = event.flags.contains(modifier)
-            if triggerDown && !nowDown { controller.close() }   // release ends the session
+            if triggerDown && !nowDown {
+                controller.close()                       // release ends the session
+                graceUntil = .now() + .milliseconds(250) // ...but keep eating momentum
+            }
             triggerDown = nowDown
 
         case .keyDown:
@@ -304,38 +311,43 @@ final class WorkspaceSwitcher {
     }
 
     // Drive the overlay from the real 3-finger horizontal swipe and swallow it
-    // so the OS doesn't also switch. The session stays open until the modifier
-    // is released (handled in flagsChanged).
+    // so the OS doesn't also switch.
+    //
+    // A "session" is the modifier being held, plus a short grace window after
+    // release. Within a session we swallow the *entire* gesture — began,
+    // changed, ended, and the momentum tail — so nothing leaks to the OS to
+    // cause an edge overscroll. Outside a session, bare swipes pass through to
+    // the native switch. The overlay is only driven while the modifier is
+    // actually held (the grace window just absorbs momentum).
     private func handleGesture(_ raw: UInt32, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         // Our own synthetic swipes must reach the WindowServer.
         if event_is_synthetic(event) { return Unmanaged.passUnretained(event) }
 
+        let inSession = triggerDown || DispatchTime.now() < graceUntil
+
         var ev = DockSwipeEvent()
         if raw == kCGSEventDockControl && dock_swipe_classify(event, &ev) {
+            guard inSession else { return Unmanaged.passUnretained(event) }  // bare swipe -> native
+            // Keep the momentum window alive as long as tail events keep coming.
+            if !triggerDown { graceUntil = .now() + .milliseconds(250) }
+
             switch ev.phase {
             case DockSwipeBegan:
-                guard triggerDown else { return Unmanaged.passUnretained(event) }  // gate
-                gestureActive = controller.swipeBegin()
-                return gestureActive ? nil : Unmanaged.passUnretained(event)
+                if triggerDown { _ = controller.swipeBegin() }
             case DockSwipeChanged:
-                guard gestureActive else { return Unmanaged.passUnretained(event) }
-                controller.swipeUpdate(progress: ev.progress)
-                return nil
+                if triggerDown && controller.isActive { controller.swipeUpdate(progress: ev.progress) }
             case DockSwipeEnded:
-                guard gestureActive else { return Unmanaged.passUnretained(event) }
-                if ev.velocityX != 0 { controller.swipeFling(right: ev.velocityX > 0) }
-                gestureActive = false
-                return nil
-            case DockSwipeCancelled:
-                gestureActive = false
-                return nil
+                if triggerDown && controller.isActive && ev.velocityX != 0 {
+                    controller.swipeFling(right: ev.velocityX > 0)
+                }
             default:
                 break
             }
+            return nil   // swallow the whole gesture, including momentum
         }
-        // Companion gesture events / non-horizontal dock events: swallow while
-        // tracking to suppress the native switch, else pass through.
-        return gestureActive ? nil : Unmanaged.passUnretained(event)
+
+        // Companion gesture events / non-horizontal dock events.
+        return inSession ? nil : Unmanaged.passUnretained(event)
     }
 }
 

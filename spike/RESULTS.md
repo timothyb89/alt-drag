@@ -291,11 +291,16 @@ server-side), re-run with `--raise-wait` and note it.
 
 | Target | deliver ms | control actuated? | needed --raise-wait? | raise@ ms | Notes |
 |---|---|---|---|---|---|
-| Native app (Finder / System Settings) |  |  |  |  |  |
+| Native app (Finder / System Settings) | 5.9 | y | n | 24.4 |  |
 | Safari |  |  |  |  |  |
-| Chrome / Chromium |  |  |  |  |  |
-| Electron (Slack / VS Code) |  |  |  |  |  |
-| Occluded: behind another app's window |  |  |  |  | session post needs the raise to land first |
+| Chrome / Chromium | 13.2 | y | no (*) | 8.7 | raise-wait improves consistency |
+| Electron (Slack / VS Code) | 16.4 | y | n | 12.3 |  |
+| Occluded: behind another app's window | 10.2 | y | n | 18.3 | session post needs the raise to land first |
+
+Testing notes:
+- The click was not released on the first click after starting, leading to an
+  accidental drag gesture. Solved by clicking again and did not impact
+  subsequent click attempts, only the first click after startup.
 
 ### Run 3 re-test — `--post=ax` (zero-raise AXPress probe)
 
@@ -310,14 +315,19 @@ Buttons/tabs only — drags and arbitrary canvas points use the fallback.
 | Chrome button/tab |  |  |  | Chromium AX tree can be lazy off-focus |
 | Electron |  |  |  |  |
 
+n/a: I could not find any windows that did NOT result in: `AX element at click point not pressable — falling back to session-fast`
+
 ## Experiment 3 — cursor continuity (`--cursor=move`, focus=nsax, post=session)
 
 Drag from a background window and watch the pointer during the activation wait.
 
 | Target | cursor glides during activation? | drag stream coherent (down→drag→up)? | hover side-effects in prev frontmost app? | Notes |
 |---|---|---|---|---|
-| Native app |  |  |  | tooltips / hover highlights expected benign |
-| Safari / browser text selection |  |  |  |  |
+| Native app | y | y | n | tooltips / hover highlights expected benign |
+| Safari / browser text selection | y | y | n |  |
+
+Testing notes:
+- Cursor snapped back to initial click position the first time after starting. Fine on subsequent clicks.
 
 ## Combined — recommended target (`--focus=slps --post=session-fast --cursor=move`)
 
@@ -325,10 +335,10 @@ Drag from a background window and watch the pointer during the activation wait.
 
 | Target | activation ms | deliver ms | click instant? | cursor smooth? | live drag reaches target? | Notes |
 |---|---|---|---|---|---|---|
-| Native app |  |  |  |  |  |  |
-| Safari |  |  |  |  |  |  |
-| Chrome / Chromium |  |  |  |  |  | session delivery — no renderer filtering expected |
-| Occluded window |  |  |  |  |  | may need --raise-wait |
+| Native app | 6.3 | 4.3 | y | y | y |  |
+| Safari | 28.7 | 12.9 | y | y | y |  |
+| Chrome / Chromium | 7.4 | 10.8 | y | y | y | session delivery — no renderer filtering expected |
+| Occluded window | 3.1 | 9.5 | y | y | y | may need --raise-wait |
 
 ---
 

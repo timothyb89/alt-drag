@@ -1,5 +1,41 @@
 # Integration note — folding the experiments into `ClickThroughEngine`
 
+## Integrated on 2026-07-10
+
+The recommended architecture below landed in `app/Sources` (ClickThroughEngine
+rewritten; AppPolicy/Settings/EventTapController touched lightly):
+
+- **SLPS fast focus** ported (dlsym-guarded, yabai byte-layout comments kept);
+  missing symbols degrade per-gesture to the previous NS/AX `activateAndWaitForKey`
+  race, feeding the same delivery funnel.
+- **session-fast delivery with raise-confirm DEFAULT ON**: sync make-key in the tap
+  callback, then a point-scoped z-order spin on the worker (1ms steps, default cap
+  40ms — covers the observed Chromium 9-14ms raises with headroom), then the down is
+  re-posted to the session tap and the gesture goes live. No ns/ax polling anywhere
+  on the delivery path. The spin runs on the worker (the spike ran it on the tap
+  thread) so the tap callback stays ~1-2ms; pending drags cover the gap as mouseMoved.
+- **Cap tunable per app** via the existing override-rules storage: `AppOverride`
+  gained an optional `raiseCapMs` (old persisted rules decode unchanged;
+  `AppOverride.state` became optional so a cap can exist without a routing rule),
+  read through `AppPolicy.raiseConfirmCapMs(bundleId:)`, settable via
+  `Settings.setRaiseCap`. No seeded Chromium rules: the 40ms default already covers
+  them (the spike's Chrome misses came from its 10ms cap).
+- **Cursor continuity**: pending drags mutate to `mouseMoved` and pass through; both
+  `CGWarpMouseCursorPosition` warps deleted (no path freezes the pointer anymore).
+- **Cold-start fixes**: `ClickThroughEngine.prewarm()` (called from
+  `EventTapController.start()`) absorbs the lazy first-call costs — AX connection
+  spin-up, first CGWindowList, first CGEvent from the source, dlsym resolution,
+  NSWorkspace — off the tap thread, so the first gesture's down handler can't stall
+  into the tap timeout (the stuck-drag / cursor-snap first-click bugs).
+- **Deliberate semantic change**: with click-through ON and drag-through OFF, a
+  background drag is now live (the window is key within ~10ms, so the native
+  consequence of the remaining hardware drag IS a live drag); the old "eaten drag"
+  reproduction only existed because activation used to take 50-200ms.
+- **Not ported** (per the findings): pid/sl/ax delivery modes, `--primer`, the
+  instrumentation ns/ax polling, and all spike logging.
+
+---
+
 Recommendation, updated after runs 1–3 (see `spike/RESULTS.md`). Key empirical facts:
 
 - **SLPS fast focus works**: activation 1–20ms vs 40–185ms for the NS/AX race, and it

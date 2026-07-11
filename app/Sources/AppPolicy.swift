@@ -28,6 +28,15 @@ final class AppPolicy {
     private var counts: [String: (succ: Int, fail: Int)] = [:]
     private let failThreshold = 2
 
+    /// Ceiling (ms) for the click-through raise-confirm spin. The 40ms default
+    /// comfortably covers the slowest observed raises (Chromium ~9-14ms) while
+    /// bounding the worst case; a per-app override wins when set.
+    func raiseConfirmCapMs(bundleId: String?) -> Int {
+        guard let bid = bundleId,
+              let cap = Settings.shared.overrides[bid]?.raiseCapMs else { return 40 }
+        return min(max(cap, 0), 250)
+    }
+
     func route(at loc: CGPoint) -> Route {
         guard let bid = bundleId(under: loc) else { return .native(nil) }
         // User/learned overrides win; then seeded defaults; then native.

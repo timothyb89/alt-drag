@@ -51,6 +51,7 @@ final class EventTapController {
         CGEvent.tapEnable(tap: t, enable: true)
         tap = t
         runLoopSource = src
+        clickThrough.prewarm()   // absorb lazy first-call costs off the tap thread
         return true
     }
 

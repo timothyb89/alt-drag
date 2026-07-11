@@ -31,7 +31,17 @@ final class Settings {
 
     func setOverride(_ bundleId: String, _ state: AppOverride.State, auto: Bool = false) {
         var o = overrides
-        o[bundleId] = AppOverride(state: state, auto: auto)
+        o[bundleId] = AppOverride(state: state, auto: auto, raiseCapMs: o[bundleId]?.raiseCapMs)
+        overrides = o
+    }
+
+    /// Set (or clear) the per-app click-through raise-confirm ceiling. A cap can
+    /// exist without a routing rule; clearing both removes the entry.
+    func setRaiseCap(_ bundleId: String, ms: Int?) {
+        var o = overrides
+        var entry = o[bundleId] ?? AppOverride(state: nil, auto: false)
+        entry.raiseCapMs = ms
+        o[bundleId] = (entry.state == nil && ms == nil) ? nil : entry
         overrides = o
     }
 
@@ -110,13 +120,21 @@ final class Settings {
     }
 }
 
-/// A per-app rule: either ignore the app entirely, or force the AX move
-/// fallback. `auto` marks rules created by gesture-support learning (vs by the
-/// user), for display only.
+/// A per-app rule: ignore the app entirely, force the AX move fallback, or
+/// (state nil) carry only tunables. `auto` marks rules created by
+/// gesture-support learning (vs by the user), for display only. `raiseCapMs`
+/// overrides the click-through raise-confirm ceiling (see ClickThroughEngine).
 struct AppOverride: Codable, Equatable {
     enum State: String, Codable { case disabled, fallback }
-    var state: State
+    var state: State?
     var auto: Bool
+    var raiseCapMs: Int?
+
+    init(state: State?, auto: Bool = false, raiseCapMs: Int? = nil) {
+        self.state = state
+        self.auto = auto
+        self.raiseCapMs = raiseCapMs
+    }
 }
 
 /// Selectable trigger modifiers surfaced in the menu.

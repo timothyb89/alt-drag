@@ -10,5 +10,6 @@ spike/overlay
 spike/haptictest
 spike/clickthrough
 spike/clickthrough2
+spike/eventprobe
 *.o
 *.dSYM

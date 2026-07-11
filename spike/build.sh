@@ -17,6 +17,8 @@ echo "built ./spike/clickthrough"
 xcrun swiftc -O clickthrough2.swift -o clickthrough2 \
     -framework Cocoa -framework ApplicationServices
 echo "built ./spike/clickthrough2"
+xcrun swiftc -O eventprobe.swift -o eventprobe -framework Cocoa
+echo "built ./spike/eventprobe"
 xcrun clang -O2 -c spacecore.c -o spacecore.o
 xcrun clang -O2 spaces.c spacecore.o -o spaces \
     -framework CoreGraphics -framework CoreFoundation -framework ApplicationServices

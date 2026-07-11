@@ -18,9 +18,25 @@
 //
 //   --post=pid|session  (default session)  Experiment 2: deliver click before raise
 //       session — baseline: swallow, wait for activation, replay to .cgSessionEventTap.
-//       pid     — invert: post the mousedown straight to the target pid IMMEDIATELY
+//       pid     — invert: post the mousedown straight to the target pid
 //                 (CGEventPostToPid, fields 91/92 set to the hit-tested window id),
-//                 activate in parallel as a cosmetic raise. Delivery never waits.
+//                 raise trailing async as a cosmetic step.
+//                 FIRST-RUN FINDING (RESULTS.md): fields 91/92 fixed the ROUTING, but
+//                 AppKit applies the first-mouse rule at DISPATCH time from the app's
+//                 active state — a down posted at ~1ms while activation confirmed at
+//                 60-190ms was discarded app-side in every app. So delivery is now
+//                 SEQUENCED: with slps available we synchronously fastFocus (~1-2ms)
+//                 BEFORE posting — the make-key records precede our mousedown in the
+//                 target's event queue, so by dispatch time the app is active and
+//                 first-mouse no longer applies; event-queue ordering does the
+//                 sequencing, no polling wait. With slps missing or --focus=nsax, we
+//                 fire the nsax activators and post the down only once a front signal
+//                 confirms (drag/up posts queue behind on the serial worker).
+//
+//   --primer            (default off)  Chromium probe from EXPERIMENTS.md: with
+//       --post=pid, post a throwaway click at (-1,-1) to the pid ~5ms before the real
+//       down, to satisfy renderer-side user-activation gating. Only try this if
+//       Chrome still ignores clicks after the slps-first sequencing.
 //
 //   --cursor=move|freeze (default freeze)  Experiment 3: cursor continuity
 //       freeze  — baseline: swallow drags (return nil) → the pointer is pinned, then
@@ -30,8 +46,13 @@
 //
 // Defaults (nsax / session / freeze) reproduce the baseline behaviour EXACTLY, so an
 // A/B run against spike/clickthrough is a flag change only. Log-line format and the
-// timing instrumentation (`activated in X ms [reason] (ns@ ax@ foc@)`) match the
-// baseline so results are directly comparable.
+// timing instrumentation (`activated in X ms [reason] (ns@ ax@ foc@ raise@)`) match
+// the baseline so results are directly comparable, with two additions after run 1:
+//   raise@ — CGWindowList z-order signal: when the target wid became the frontmost
+//            layer-0 window. Separates "window raised" (visible) from "app active"
+//            (what first-mouse cares about); the ns/ax polls lag the real flip.
+//   after-up — session replays fire on mouse-up, so `total` includes the physical
+//            button-hold; `after-up` is the real added latency (mouseup -> replay).
 //
 // SIP stays fully enabled. The private SLPS / AX symbols are resolved with dlsym and
 // guarded: if any is missing (e.g. a future macOS), --focus=slps degrades to the
@@ -55,17 +76,22 @@ struct Config {
     var focus:  FocusMode  = .nsax     // default == baseline
     var post:   PostMode   = .session  // default == baseline
     var cursor: CursorMode = .freeze   // default == baseline
+    var primer = false                 // Chromium user-activation probe (pid mode only)
 }
 var cfg = Config()
 
 func printUsage() {
-    log("usage: clickthrough2 [--focus=slps|nsax] [--post=pid|session] [--cursor=move|freeze]")
+    log("usage: clickthrough2 [--focus=slps|nsax] [--post=pid|session] [--cursor=move|freeze] [--primer]")
     log("  --focus   slps  = _SLPSSetFrontProcessWithOptions fast-focus (Experiment 1)")
     log("            nsax  = NSRunningApplication.activate + AX raise (baseline)   [default]")
-    log("  --post    pid   = CGEventPostToPid immediate delivery, fields 91/92 (Experiment 2)")
+    log("  --post    pid   = CGEventPostToPid delivery, fields 91/92 (Experiment 2);")
+    log("                    sequenced AFTER a sync slps make-key (~1-2ms) when available,")
+    log("                    else after the nsax front signal confirms")
     log("            session = replay to .cgSessionEventTap after activation (baseline) [default]")
     log("  --cursor  move  = mutate swallowed drag -> mouseMoved, keep gliding (Experiment 3)")
     log("            freeze = swallow drag, pin pointer, warp at end (baseline)     [default]")
+    log("  --primer        = with --post=pid, post a throwaway click @(-1,-1) to the pid")
+    log("                    ~5ms before the real down (Chromium user-activation probe)")
     log("  defaults reproduce spike/clickthrough exactly, for A/B comparison.")
     log("  requires Accessibility: System Settings > Privacy & Security > Accessibility")
     log("  (grant it to the terminal / process running this binary).")
@@ -75,6 +101,7 @@ func parseArgs() -> Config {
     var c = Config()
     for arg in CommandLine.arguments.dropFirst() {
         if arg == "-h" || arg == "--help" { printUsage(); exit(0) }
+        if arg == "--primer" { c.primer = true; continue }
         let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { log("ignoring unrecognized arg: \(arg)"); continue }
         let (k, v) = (parts[0], parts[1])
@@ -232,64 +259,93 @@ func cgWindowID(of ax: AXUIElement, fallbackAt loc: CGPoint) -> CGWindowID {
 }
 
 // --- activation (baseline instrumentation, + SLPS mode) --------------------
-// Polls THREE readiness signals so we can see which leads:
-//   • tNs  — NSWorkspace.frontmostApplication == target
-//   • tAx  — system-wide AX focused app == target
-//   • tFoc — app's kAXFocusedWindowAttribute == target
+/// Is `wid` currently the frontmost layer-0 (normal) window on screen? A CG-side
+/// z-order signal: the NSWorkspace/AX polls lag the real focus flip (slps runs logged
+/// 55-76ms "ns-led" that were visually instant), so this separates "window raised"
+/// (the visible slow part) from "app active" (what first-mouse cares about, ~1ms
+/// with slps).
+func isFrontmostWindow(_ wid: CGWindowID) -> Bool {
+    guard wid != 0 else { return false }
+    let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return false }
+    for w in list {   // front-to-back: first layer-0 entry is the frontmost normal window
+        guard (w[kCGWindowLayer as String] as? Int) == 0 else { continue }
+        return (w[kCGWindowNumber as String] as? CGWindowID) == wid
+    }
+    return false
+}
+
+// Polls FOUR readiness signals so we can see which leads:
+//   • tNs    — NSWorkspace.frontmostApplication == target
+//   • tAx    — system-wide AX focused app == target
+//   • tFoc   — app's kAXFocusedWindowAttribute == target
+//   • tRaise — target wid is the frontmost layer-0 window (CGWindowList z-order)
 // In --focus=slps mode the actual focus is driven synchronously by SLPS; the poll
-// then just measures how quickly the public signals confirm it (expected single-digit ms).
+// then just measures how quickly the public signals confirm it. `skipFocus` skips the
+// focus actions entirely (pid+slps fast path already made the window key in the tap
+// callback) and only performs the cosmetic AXRaise + confirmation polling. `onFront`
+// fires ONCE, the first time a front signal (ns or ax) confirms — the pid+nsax path
+// uses it to post the deferred mousedown at the earliest safe moment.
 struct ActResult {
     var ms: Double?; var reason: String
-    var tNs: Double?; var tAx: Double?; var tFoc: Double?
+    var tNs: Double?; var tAx: Double?; var tFoc: Double?; var tRaise: Double?
 }
 
 func activateAndWait(_ win: AXUIElement, winPid: pid_t, wid: CGWindowID,
-                     mode: FocusMode, timeoutMs: Int = 400) -> ActResult {
+                     mode: FocusMode, skipFocus: Bool = false,
+                     onFront: (() -> Void)? = nil, timeoutMs: Int = 400) -> ActResult {
     let app = AXUIElementCreateApplication(winPid)
 
-    switch mode {
-    case .nsax:
-        AXUIElementPerformAction(win, kAXRaiseAction as CFString)
-        AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(win, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        NSRunningApplication(processIdentifier: winPid)?.activate(options: [])
-    case .slps:
-        if fastFocus(pid: winPid, wid: wid) {
-            AXUIElementPerformAction(win, kAXRaiseAction as CFString)   // cosmetic raise (post make-key, like yabai)
-        } else {
-            // Symbols missing / PSN lookup failed: degrade to the NS/AX path.
+    if skipFocus {
+        AXUIElementPerformAction(win, kAXRaiseAction as CFString)   // cosmetic raise only
+    } else {
+        switch mode {
+        case .nsax:
             AXUIElementPerformAction(win, kAXRaiseAction as CFString)
             AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
             AXUIElementSetAttributeValue(win, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             NSRunningApplication(processIdentifier: winPid)?.activate(options: [])
+        case .slps:
+            if fastFocus(pid: winPid, wid: wid) {
+                AXUIElementPerformAction(win, kAXRaiseAction as CFString)   // cosmetic raise (post make-key, like yabai)
+            } else {
+                // Symbols missing / PSN lookup failed: degrade to the NS/AX path.
+                AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+                AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementSetAttributeValue(win, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                NSRunningApplication(processIdentifier: winPid)?.activate(options: [])
+            }
         }
     }
 
     let start = DispatchTime.now().uptimeNanoseconds
     func elapsed() -> Double { Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000 }
-    var tNs: Double?, tAx: Double?, tFoc: Double?
+    var tNs: Double?, tAx: Double?, tFoc: Double?, tRaise: Double?
+    var firedFront = false
     var waited = 0
     while waited < timeoutMs {
         let isNs = NSWorkspace.shared.frontmostApplication?.processIdentifier == winPid
         let isAx = axFocusedAppPid() == winPid
         let isFoc = axCopyElement(app, kAXFocusedWindowAttribute as String).map { CFEqual($0, win) } ?? false
+        if tRaise == nil, isFrontmostWindow(wid) { tRaise = elapsed() }
         let el = elapsed()
         if isNs, tNs == nil { tNs = el }
         if isAx, tAx == nil { tAx = el }
         if isFoc, tFoc == nil { tFoc = el }
         let isFront = isNs || isAx
+        if isFront && !firedFront { firedFront = true; onFront?() }
         let tFrontFirst = [tNs, tAx].compactMap { $0 }.min()
         if isFront && isFoc {
             let reason = (tAx != nil && (tNs == nil || tAx! < tNs!)) ? "ax-led" : "ns-led"
-            return ActResult(ms: el, reason: reason, tNs: tNs, tAx: tAx, tFoc: tFoc)
+            return ActResult(ms: el, reason: reason, tNs: tNs, tAx: tAx, tFoc: tFoc, tRaise: tRaise)
         }
         if isFront, let tf = tFrontFirst, el - tf > 40 {
-            return ActResult(ms: el, reason: "front-only(grace)", tNs: tNs, tAx: tAx, tFoc: tFoc)
+            return ActResult(ms: el, reason: "front-only(grace)", tNs: tNs, tAx: tAx, tFoc: tFoc, tRaise: tRaise)
         }
         usleep(3000)               // 3ms
         waited += 3
     }
-    return ActResult(ms: nil, reason: "timeout", tNs: tNs, tAx: tAx, tFoc: tFoc)
+    return ActResult(ms: nil, reason: "timeout", tNs: tNs, tAx: tAx, tFoc: tFoc, tRaise: tRaise)
 }
 
 // --- posting a click (session tap OR direct to pid) ------------------------
@@ -315,6 +371,19 @@ func post(_ type: CGEventType, at loc: CGPoint, clickState: Int64, toPid: pid_t 
     }
 }
 
+/// Chromium user-activation-gate probe (--primer, pid mode only): a throwaway click
+/// at (-1,-1) delivered to the pid just before the real down, so renderer-side input
+/// filtering sees a preceding "user" interaction. Off-window coords -> no actuation.
+/// Sleeps ~5ms so the primer lands ahead of the real down (rare event; blocking the
+/// caller briefly is acceptable, and it preserves ordering with the pid-post stream).
+func postPrimer(toPid wpid: pid_t, wid: CGWindowID) {
+    let loc = CGPoint(x: -1, y: -1)
+    post(.leftMouseDown, at: loc, clickState: 1, toPid: wpid, wid: wid)
+    post(.leftMouseUp, at: loc, clickState: 1, toPid: wpid, wid: wid)
+    log(String(format: "posted PRIMER click @(-1,-1) -> pid %d (user-activation probe)", wpid))
+    usleep(5000)
+}
+
 // --- gesture state (guarded by `lock`) -------------------------------------
 final class Pending {
     var active = false
@@ -328,7 +397,9 @@ final class Pending {
     var upSeen = false
     var activated = false
     var liveDragging = false   // handed off to a live native drag; stop swallowing
+    var downPosted = false     // pid mode: has the down been delivered to the pid yet?
     var downTime = DispatchTime.now().uptimeNanoseconds
+    var upTime = DispatchTime.now().uptimeNanoseconds   // physical mouseup (for after-up metric)
 }
 let pending = Pending()
 let lock = NSLock()
@@ -343,7 +414,12 @@ func tryFinish() {
     let downLoc = pending.downLoc, lastLoc = pending.lastLoc
     let cs = pending.clickState, isDrag = pending.isDrag, upSeen = pending.upSeen
     let wpid = pending.winPid, wid = pending.wid
-    let total = Double(DispatchTime.now().uptimeNanoseconds - pending.downTime) / 1_000_000
+    let now = DispatchTime.now().uptimeNanoseconds
+    let total = Double(now - pending.downTime) / 1_000_000
+    // `total` includes the user's physical button-hold time (replay fires on mouse-up),
+    // so it reads 100-200ms even with single-digit activation. `afterUp` is the part
+    // we actually add: physical mouseup -> replay post.
+    let afterUp = Double(now - pending.upTime) / 1_000_000
 
     if !upSeen {
         // Still holding: begin a live native gesture at the true origin, then let the
@@ -363,13 +439,13 @@ func tryFinish() {
         post(.leftMouseDown, at: downLoc, clickState: cs, toPid: wpid, wid: wid)
         post(.leftMouseDragged, at: lastLoc, clickState: cs, toPid: wpid, wid: wid)
         post(.leftMouseUp, at: lastLoc, clickState: cs, toPid: wpid, wid: wid)
-        log(String(format: "replayed DRAG down@(%.0f,%.0f)->up@(%.0f,%.0f)  total %.1fms",
-                   downLoc.x, downLoc.y, lastLoc.x, lastLoc.y, total))
+        log(String(format: "replayed DRAG down@(%.0f,%.0f)->up@(%.0f,%.0f)  total %.1fms (after-up %.1fms)",
+                   downLoc.x, downLoc.y, lastLoc.x, lastLoc.y, total, afterUp))
     } else {
         post(.leftMouseDown, at: downLoc, clickState: cs, toPid: wpid, wid: wid)
         post(.leftMouseUp, at: downLoc, clickState: cs, toPid: wpid, wid: wid)
-        log(String(format: "replayed CLICK @(%.0f,%.0f) clickState=%d  total %.1fms",
-                   downLoc.x, downLoc.y, cs, total))
+        log(String(format: "replayed CLICK @(%.0f,%.0f) clickState=%d  total %.1fms (after-up %.1fms)",
+                   downLoc.x, downLoc.y, cs, total, afterUp))
     }
     // Experiment 3: only warp when freezing. In --cursor=move the pointer glided with
     // the mutated mouseMoved stream and is already at lastLoc.
@@ -413,27 +489,54 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         pending.active = true; pending.win = win; pending.winPid = wpid; pending.wid = wid
         pending.downLoc = loc; pending.lastLoc = loc; pending.clickState = cs
         pending.isDrag = false; pending.upSeen = false; pending.activated = false
-        pending.liveDragging = false
+        pending.liveDragging = false; pending.downPosted = false
         pending.downTime = DispatchTime.now().uptimeNanoseconds
         let startT = pending.downTime
         lock.unlock()
-        log(String(format: "swallowed first-click on unfocused win (pid %d, wid %u) @(%.0f,%.0f) — activating [focus=%@ post=%@ cursor=%@]…",
-                   wpid, wid, loc.x, loc.y, cfg.focus.rawValue, cfg.post.rawValue, cfg.cursor.rawValue))
+        log(String(format: "swallowed first-click on unfocused win (pid %d, wid %u) @(%.0f,%.0f) — activating [focus=%@ post=%@ cursor=%@%@]…",
+                   wpid, wid, loc.x, loc.y, cfg.focus.rawValue, cfg.post.rawValue, cfg.cursor.rawValue,
+                   cfg.primer ? " primer" : ""))
 
-        // Experiment 2: deliver the mousedown to the target pid NOW, in parallel with
-        // (not after) activation. This is the click-before-raise inversion.
-        if cfg.post == .pid {
+        // Experiment 2, sequenced delivery. First-mouse is applied at dispatch time
+        // from the app's active state (proved by the first run), so the app must be
+        // active BEFORE the down is dispatched:
+        //   slps fast path — synchronously make the window key (~1-2ms, rare event, in
+        //   the tap callback so ordering with the drag/up pid-posts is preserved),
+        //   THEN post. The make-key records precede our mousedown in the target's
+        //   event queue, so no polling wait is needed.
+        //   nsax fallback (symbols missing or forced) — fire the activators and post
+        //   the down from activateAndWait's onFront, the first time a front signal
+        //   confirms. Drag/up posts queue behind on the serial worker until then.
+        var downPostedNow = false
+        if cfg.post == .pid && cfg.focus == .slps && slpsAvailable {
+            if cfg.primer { postPrimer(toPid: wpid, wid: wid) }
+            fastFocus(pid: wpid, wid: wid)
             post(.leftMouseDown, at: loc, clickState: cs, toPid: wpid, wid: wid)
+            downPostedNow = true
+            lock.lock(); pending.downPosted = true; lock.unlock()
             let dms = Double(DispatchTime.now().uptimeNanoseconds - startT) / 1_000_000
-            log(String(format: "posted mousedown -> pid %d (wid %u) directly (deliver %.1fms) — activation is cosmetic",
+            log(String(format: "posted mousedown -> pid %d (wid %u) directly (deliver %.1fms, after slps make-key)",
                        wpid, wid, dms))
+        }
+        let deferredDown = (cfg.post == .pid && !downPostedNow)
+        if deferredDown && cfg.focus == .slps {   // requested slps but symbols missing
+            log("pid delivery deferred: SLPS symbols MISSING — waiting for nsax front signal")
         }
 
         worker.async {
-            let r = activateAndWait(win, winPid: wpid, wid: wid, mode: cfg.focus)
+            let onFront: (() -> Void)? = !deferredDown ? nil : {
+                if cfg.primer { postPrimer(toPid: wpid, wid: wid) }
+                post(.leftMouseDown, at: loc, clickState: cs, toPid: wpid, wid: wid)
+                lock.lock(); pending.downPosted = true; lock.unlock()
+                let dms = Double(DispatchTime.now().uptimeNanoseconds - startT) / 1_000_000
+                log(String(format: "posted mousedown -> pid %d (wid %u) directly (deliver %.1fms, waited for nsax activation)",
+                           wpid, wid, dms))
+            }
+            let r = activateAndWait(win, winPid: wpid, wid: wid, mode: cfg.focus,
+                                    skipFocus: downPostedNow, onFront: onFront)
             lock.lock(); pending.activated = true; lock.unlock()
             func ms(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "—" }
-            let signals = "ns@\(ms(r.tNs)) ax@\(ms(r.tAx)) foc@\(ms(r.tFoc))"
+            let signals = "ns@\(ms(r.tNs)) ax@\(ms(r.tAx)) foc@\(ms(r.tFoc)) raise@\(ms(r.tRaise))"
             if let t = r.ms {
                 let lead = (r.tNs != nil && r.tAx != nil) ? String(format: "  ns-ax gap=%.1fms", r.tNs! - r.tAx!) : ""
                 log(String(format: "activated in %.1fms [%@] (%@)%@", t, r.reason, signals, lead))
@@ -448,7 +551,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         lock.lock()
         if pending.liveDragging { lock.unlock(); return Unmanaged.passUnretained(event) } // native drag
         let armed = pending.active && !pending.upSeen
-        var wpid: pid_t = 0, wid: CGWindowID = 0, cs: Int64 = 1
+        var wpid: pid_t = 0, wid: CGWindowID = 0, cs: Int64 = 1, downPosted = false
         if armed {
             pending.lastLoc = event.location
             // Only a real drag past the threshold demotes off the click path; sub-threshold
@@ -458,14 +561,23 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
                 pending.isDrag = true
             }
             wpid = pending.winPid; wid = pending.wid; cs = pending.clickState
+            downPosted = pending.downPosted
         }
         lock.unlock()
         if !armed { return Unmanaged.passUnretained(event) }
 
         // Experiment 2 + 3: feed live drag motion straight to the target pid so the
-        // drag reaches the (now-key) window with no handoff discontinuity.
+        // drag reaches the (now-key) window with no handoff discontinuity. If the down
+        // is still deferred (nsax sequencing), queue the drag on the serial worker so
+        // it lands AFTER the down (the worker is busy inside activateAndWait, whose
+        // onFront posts the down before it returns).
         if cfg.post == .pid {
-            post(.leftMouseDragged, at: event.location, clickState: cs, toPid: wpid, wid: wid)
+            if downPosted {
+                post(.leftMouseDragged, at: event.location, clickState: cs, toPid: wpid, wid: wid)
+            } else {
+                let dragLoc = event.location
+                worker.async { post(.leftMouseDragged, at: dragLoc, clickState: cs, toPid: wpid, wid: wid) }
+            }
         }
         // Experiment 3: keep the cursor gliding — mutate the swallowed drag into a
         // mouseMoved and let it through, instead of dropping it (which pinned the
@@ -486,22 +598,47 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
             return Unmanaged.passUnretained(event)      // let the real up close it
         }
         let armed = pending.active && !pending.upSeen
-        if armed { pending.upSeen = true; pending.lastLoc = event.location }
+        if armed { pending.upSeen = true; pending.lastLoc = event.location
+                   pending.upTime = DispatchTime.now().uptimeNanoseconds }
         lock.unlock()
         if !armed { return Unmanaged.passUnretained(event) }
 
         if cfg.post == .pid {
-            // Direct-delivery architecture: down (and any drags) already went to the
-            // pid; just post the up. Delivery never waited on activation.
             lock.lock()
             let wpid = pending.winPid, wid = pending.wid, cs = pending.clickState
             let up = pending.lastLoc, isDrag = pending.isDrag
-            let total = Double(DispatchTime.now().uptimeNanoseconds - pending.downTime) / 1_000_000
-            pending.active = false
+            let dLoc = pending.downLoc, downT = pending.downTime
+            let posted = pending.downPosted
+            if posted { pending.active = false }
             lock.unlock()
-            post(.leftMouseUp, at: up, clickState: cs, toPid: wpid, wid: wid)
-            log(String(format: "posted mouseup -> pid %d (wid %u) — %@ delivered direct, total %.1fms",
-                       wpid, wid, isDrag ? "DRAG" : "CLICK", total))
+            if posted {
+                // Down already delivered (slps fast path, or nsax front confirmed):
+                // post the up directly from the tap thread — ordering is safe.
+                post(.leftMouseUp, at: up, clickState: cs, toPid: wpid, wid: wid)
+                let total = Double(DispatchTime.now().uptimeNanoseconds - downT) / 1_000_000
+                log(String(format: "posted mouseup -> pid %d (wid %u) — %@ delivered direct, total %.1fms",
+                           wpid, wid, isDrag ? "DRAG" : "CLICK", total))
+            } else {
+                // Down still deferred (nsax sequencing): queue the up on the serial
+                // worker so it lands after the onFront-posted down. pending.active
+                // stays true until the worker finishes, so no new gesture overlaps.
+                worker.async {
+                    lock.lock()
+                    let postedNow = pending.downPosted
+                    pending.active = false
+                    lock.unlock()
+                    if !postedNow {
+                        // Activation never confirmed (timeout): best-effort late down —
+                        // almost certainly eaten as first-mouse, but don't drop the pair.
+                        post(.leftMouseDown, at: dLoc, clickState: cs, toPid: wpid, wid: wid)
+                        log("posted LATE mousedown -> pid \(wpid) (activation never confirmed) — click likely eaten")
+                    }
+                    post(.leftMouseUp, at: up, clickState: cs, toPid: wpid, wid: wid)
+                    let total = Double(DispatchTime.now().uptimeNanoseconds - downT) / 1_000_000
+                    log(String(format: "posted mouseup -> pid %d (wid %u) — %@ delivered direct, total %.1fms",
+                               wpid, wid, isDrag ? "DRAG" : "CLICK", total))
+                }
+            }
             if cfg.cursor == .freeze {
                 CGWarpMouseCursorPosition(up)           // baseline: pointer was pinned, snap it to end
                 CGAssociateMouseAndMouseCursorPosition(1)
@@ -541,7 +678,10 @@ CGEvent.tapEnable(tap: tap, enable: true)
 
 printUsage()
 log("modes: focus=\(cfg.focus.rawValue) post=\(cfg.post.rawValue) cursor=\(cfg.cursor.rawValue)"
-    + "  (defaults reproduce the baseline)")
+    + " primer=\(cfg.primer ? "on" : "off")  (defaults reproduce the baseline)")
+if cfg.primer && cfg.post != .pid {
+    log("NOTE: --primer has no effect without --post=pid.")
+}
 log("SLPS symbols: \(slpsAvailable ? "resolved" : "MISSING")"
     + (fnAXGetWindow != nil ? ", _AXUIElementGetWindow resolved" : ", _AXUIElementGetWindow MISSING (CGWindowList fallback)"))
 if cfg.focus == .slps && !slpsAvailable {

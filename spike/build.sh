@@ -9,6 +9,9 @@ xcrun swiftc -O main.swift -o alt-drag-spike
 echo "built ./spike/alt-drag-spike"
 xcrun swiftc -O resize.swift -o alt-resize-spike
 echo "built ./spike/alt-resize-spike"
+xcrun swiftc -O clickthrough.swift -o clickthrough \
+    -framework Cocoa -framework ApplicationServices
+echo "built ./spike/clickthrough"
 xcrun clang -O2 -c spacecore.c -o spacecore.o
 xcrun clang -O2 spaces.c spacecore.o -o spaces \
     -framework CoreGraphics -framework CoreFoundation -framework ApplicationServices

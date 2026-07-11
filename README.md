@@ -5,7 +5,9 @@ anywhere in a window to **move** it (left button) or **resize** it (right
 button) — without releasing the perfect, native feel of a title-bar drag.
 
 It also adds **instant workspace switching**: hold the same modifier and either
-3-finger-swipe or press Tab to flip between spaces with no slide animation.
+3-finger-swipe or press Tab to flip between spaces with no slide animation, and
+optional **click-through / drag-through** to stop macOS eating the first click on
+an inactive window.
 
 Most existing tools reimplement window dragging by setting the window's position
 frame-by-frame, which loses snapping, alignment guides, tiling drop-zones, and
@@ -71,6 +73,43 @@ our synthetic posts by source pid) so the OS doesn't *also* switch.
   Auto-disabled when the trigger is Command, so it doesn't shadow ⌘-Tab.
 - The overlay shows numbered placeholders; live previews of other spaces aren't
   available from macOS (see limitations).
+
+### Click-through & drag-through — swallow, activate, re-post
+By default macOS discards the first click on an inactive window: it's used only
+to activate, and the `mouseDown` is dropped unless the hit view overrides
+`acceptsFirstMouse:`. That decision happens **in the target app's AppKit,
+per-view**, so a session-level event tap can't observe whether a click was
+eaten — only that it landed on a window that isn't focused.
+
+So Alt-Drag doesn't try to detect an eaten click. On a modifier-free left press
+on a **background** window it **swallows** the press, activates the window
+itself, and **re-posts** the gesture. Because the original is swallowed, the
+re-post is immune to double-actuation regardless of the view's
+`acceptsFirstMouse:` (eaten view: 0→1; accepting view: 1→1 — never 2). Since the
+click/drag distinction isn't known at mouse-down, it always intercepts, then
+routes on **resolution**, gated by two independent toggles:
+
+- **Drag-through** — a press that becomes a drag **hands off to a live native
+  drag** the moment the window is focused, so e.g. text selection in an inactive
+  window tracks live. The activation latency hides under the pointer motion.
+- **Click-through** — a press that resolves as a click is re-posted after
+  activation so it **actuates on the single click** instead of being wasted.
+
+When a toggle is **off**, that path reproduces native behavior instead (the
+first click just focuses + is eaten), so *drag-only* leaves clicks completely
+native — no added latency — which is why it's the lower-downside default choice.
+
+The residual cost is honest and unavoidable: a click can only actuate once its
+window is **key**, which requires the app to be **frontmost**, a ~50 ms
+WindowServer activation floor. Spikes confirmed `NSWorkspace.frontmostApplication`
+and the system-wide AX focused app flip together (no ordering slack), and that
+injecting synthetic motion to mask a click's wait fights the OS — so click-through
+removes the wasted *second* click but can't make the first one instant on a slow
+app (Chrome/Slack/Electron). Drags don't have this tell because pointer tracking
+is decoupled from key-window state.
+
+Per-app **Disabled** rules (see App Rules) suppress click-through too, and our own
+re-posted events are tagged so the tap ignores them.
 
 ## Prerequisites
 
@@ -141,6 +180,11 @@ Auto-learned rules are tagged `(auto)` and can be individually edited or removed
 - **Trigger** — choose the modifier (Option, Command, Control, Option+Shift).
   This modifier gates the workspace switch too.
 - **Launch at Login** — register via `SMAppService`.
+- **Click-Through** (both off by default)
+  - **Click-Through** — re-post an eaten background click so it actuates on the
+    first click (adds ~one activation of latency on slow apps).
+  - **Drag-Through** — hand a background drag off to a live native drag; leaves
+    clicks fully native. Lower-downside; enable this alone for drags only.
 - **Workspace Switch**
   - **Instant Switch Gesture** — enable/disable the workspace switch.
   - **Swipe Sensitivity** — how much of a swipe spans all desktops (High/Medium/Low).
@@ -153,12 +197,13 @@ Auto-learned rules are tagged `(auto)` and can be individually edited or removed
 ```
 app/            the menu-bar app
   Sources/      Swift sources (see AppDelegate, EventTapController, ResizeEngine,
-                WorkspaceSwitcher) plus the C core (spacecore.c) + bridging header
+                ClickThroughEngine, WorkspaceSwitcher) plus the C core
+                (spacecore.c) + bridging header
   scripts/      setup-signing.sh
   build.sh      compile + bundle + sign
   Info.plist
 spike/          throwaway validation spikes (move, resize, spaces, overlay,
-                haptics) — reference only
+                haptics, clickthrough) — reference only
 ```
 
 ## Known limitations
@@ -169,6 +214,14 @@ spike/          throwaway validation spikes (move, resize, spaces, overlay,
 - Resize on very heavy apps (e.g. Slack) lags — this mirrors the native resize,
   which is also slow there.
 - The AX move fallback has no window/edge snapping (the native path does).
+- Click-through can't make the *first* click on a slow-to-activate app (Chrome,
+  Slack, Electron) instant — the ~50 ms app-activation floor is a WindowServer
+  cost with no ordering slack. It removes the wasted second click, not the wait.
+- Click-through only fixes clicks that cross *apps*; a click on a non-key window
+  of the already-active app takes the cheap pass-through path and stays native.
+- On activation timeout (a window that never reports focused) a click-through
+  press is delivered anyway but may be lost, degrading to native (one wasted
+  click). Rare; set a per-app Disabled rule for a persistent offender.
 - The workspace overlay shows numbered placeholders, not live space previews:
   macOS doesn't render off-screen spaces, so their windows can't be captured.
 - Workspace haptics on external trackpads use the private `MTActuator` API and

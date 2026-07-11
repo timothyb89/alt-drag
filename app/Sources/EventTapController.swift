@@ -17,6 +17,7 @@ final class EventTapController {
     private var leftGesture: LeftGesture = .none
     private let resize = ResizeEngine()
     private let move = MoveEngine()
+    private let clickThrough = ClickThroughEngine()
 
     // Gesture-support probe. Main-thread fields vs probeQueue-only fields are
     // kept strictly separate so no locking is needed (probeQueue is serial).
@@ -60,6 +61,7 @@ final class EventTapController {
         leftGesture = .none
         move.end()
         resize.end()
+        clickThrough.cancel()
         tap = nil
         runLoopSource = nil
     }
@@ -102,12 +104,20 @@ final class EventTapController {
             if let t = tap { CGEvent.tapEnable(tap: t, enable: true) }
             return Unmanaged.passUnretained(event)
         }
+        // Let our own re-posted click-through events pass straight through.
+        if event.getIntegerValueField(.eventSourceUserData) == kClickThroughTag {
+            return Unmanaged.passUnretained(event)
+        }
         guard Settings.shared.enabled else { return Unmanaged.passUnretained(event) }
         let trigger = Settings.shared.modifier
 
         switch type {
         case .leftMouseDown:
-            guard event.flags.contains(trigger) else { break }
+            guard event.flags.contains(trigger) else {
+                // No trigger held: click-through / drag-through territory.
+                if clickThrough.onDown(event) { return nil }
+                break
+            }
             let loc = event.location
             switch AppPolicy.shared.route(at: loc) {
             case .disabled:
@@ -131,7 +141,7 @@ final class EventTapController {
             switch leftGesture {
             case .native: remapToNativeMove(event, trigger: trigger)
             case .axMove: move.update(event.location); return nil
-            case .none:   break
+            case .none:   if clickThrough.onDragged(event) { return nil }
             }
 
         case .leftMouseUp:
@@ -145,7 +155,7 @@ final class EventTapController {
                 leftGesture = .none
                 return nil
             case .none:
-                break
+                if clickThrough.onUp(event) { return nil }
             }
 
         case .rightMouseDown:

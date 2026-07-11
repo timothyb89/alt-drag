@@ -8,5 +8,6 @@ spike/alt-resize-spike
 spike/spaces
 spike/overlay
 spike/haptictest
+spike/clickthrough
 *.o
 *.dSYM

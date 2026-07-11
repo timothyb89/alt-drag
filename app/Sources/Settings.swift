@@ -14,6 +14,8 @@ final class Settings {
         static let workspaceEnabled = "workspaceEnabled"
         static let workspaceHaptics = "workspaceHaptics"
         static let workspaceSensitivity = "workspaceSensitivity"
+        static let clickThrough = "clickThroughEnabled"
+        static let dragThrough = "dragThroughEnabled"
     }
 
     /// Per-app override rules, keyed by bundle identifier.
@@ -51,6 +53,24 @@ final class Settings {
     var enabled: Bool {
         get { d.object(forKey: Key.enabled) as? Bool ?? true }
         set { d.set(newValue, forKey: Key.enabled) }
+    }
+
+    // --- Click-through / drag-through ----------------------------------------
+
+    /// Re-post a background click that resolves as a CLICK, after activating the
+    /// window, so it actuates instead of being eaten (adds ~one activation of
+    /// latency; see ClickThroughEngine). Opt-in.
+    var clickThroughEnabled: Bool {
+        get { d.object(forKey: Key.clickThrough) as? Bool ?? false }
+        set { d.set(newValue, forKey: Key.clickThrough) }
+    }
+
+    /// Hand a background click that resolves as a DRAG off to a live native drag
+    /// once the window is focused (e.g. text selection in an inactive window).
+    /// Fewer downsides than click-through; clicks stay native. Opt-in.
+    var dragThroughEnabled: Bool {
+        get { d.object(forKey: Key.dragThrough) as? Bool ?? false }
+        set { d.set(newValue, forKey: Key.dragThrough) }
     }
 
     // --- Workspace switcher --------------------------------------------------

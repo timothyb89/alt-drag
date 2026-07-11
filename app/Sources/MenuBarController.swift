@@ -53,6 +53,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+        buildClickThroughSection(into: menu)
+
+        menu.addItem(.separator())
         buildWorkspaceSection(into: menu)
 
         menu.addItem(.separator())
@@ -88,6 +91,28 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func selectModifier(_ sender: NSMenuItem) {
         Settings.shared.modifier = modifierPresets[sender.tag].flags
     }
+
+    // --- Click-through / drag-through ----------------------------------------
+    private func buildClickThroughSection(into menu: NSMenu) {
+        let header = NSMenuItem(title: "Click-Through", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+
+        let click = NSMenuItem(title: "Click-Through (fix eaten first click)",
+                               action: #selector(toggleClickThrough), keyEquivalent: "")
+        click.target = self
+        click.state = Settings.shared.clickThroughEnabled ? .on : .off
+        menu.addItem(click)
+
+        let drag = NSMenuItem(title: "Drag-Through (live background drag)",
+                              action: #selector(toggleDragThrough), keyEquivalent: "")
+        drag.target = self
+        drag.state = Settings.shared.dragThroughEnabled ? .on : .off
+        menu.addItem(drag)
+    }
+
+    @objc private func toggleClickThrough() { Settings.shared.clickThroughEnabled.toggle() }
+    @objc private func toggleDragThrough() { Settings.shared.dragThroughEnabled.toggle() }
 
     // --- Workspace switcher --------------------------------------------------
     private func buildWorkspaceSection(into menu: NSMenu) {

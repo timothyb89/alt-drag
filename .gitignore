@@ -9,5 +9,6 @@ spike/spaces
 spike/overlay
 spike/haptictest
 spike/clickthrough
+spike/clickthrough2
 *.o
 *.dSYM

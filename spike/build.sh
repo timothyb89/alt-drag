@@ -12,6 +12,11 @@ echo "built ./spike/alt-resize-spike"
 xcrun swiftc -O clickthrough.swift -o clickthrough \
     -framework Cocoa -framework ApplicationServices
 echo "built ./spike/clickthrough"
+# SkyLight resolves at runtime via dlsym (loaded transitively by AppKit), so no
+# explicit -framework SkyLight is needed here.
+xcrun swiftc -O clickthrough2.swift -o clickthrough2 \
+    -framework Cocoa -framework ApplicationServices
+echo "built ./spike/clickthrough2"
 xcrun clang -O2 -c spacecore.c -o spacecore.o
 xcrun clang -O2 spaces.c spacecore.o -o spaces \
     -framework CoreGraphics -framework CoreFoundation -framework ApplicationServices
